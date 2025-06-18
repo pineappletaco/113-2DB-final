@@ -74,3 +74,58 @@ BEGIN
         SET p_result = CONCAT('成功：已取消訂票，釋放 ', v_seat_count, ' 個座位');
     END IF;
 END;
+
+DELIMITER $$
+CREATE PROCEDURE CreateBookingWithSeatCheck(
+    IN p_customer_id INT,
+    IN p_showtime_id INT,
+    IN p_seat_id_list TEXT, -- 簡化為只訂一個座位，方便測試
+    OUT p_booking_id INT,
+    OUT p_status_message VARCHAR(255)
+)
+BEGIN
+    DECLARE v_seat_id INT;
+    DECLARE v_is_available BOOLEAN;
+    DECLARE v_price DECIMAL(6,2);
+
+    -- 宣告一個處理程序，用來捕捉 SQL 錯誤並 Rollback
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SET p_status_message = '發生未知錯誤，交易已復原。';
+    END;
+
+    SET v_seat_id = CAST(p_seat_id_list AS UNSIGNED);
+
+    START TRANSACTION;
+
+    -- 檢查座位是否可用 (假設 Seats 表有 is_available 欄位)
+    SELECT is_available INTO v_is_available 
+    FROM Seats 
+    WHERE seat_id = v_seat_id FOR UPDATE; -- 鎖定該行以避免同時預訂
+
+    IF v_is_available = TRUE THEN
+        -- 取得票價
+        SELECT price INTO v_price FROM Showtimes WHERE showtime_id = p_showtime_id;
+
+        -- 1. 新增訂單
+        INSERT INTO Bookings (customer_id, showtime_id, total_amount, payment_status)
+        VALUES (p_customer_id, p_showtime_id, v_price, 'Completed');
+        SET p_booking_id = LAST_INSERT_ID();
+
+        -- 2. 新增票券
+        INSERT INTO Tickets (booking_id, seat_id, ticket_price)
+        VALUES (p_booking_id, v_seat_id, v_price);
+
+        -- 3. 更新座位狀態
+        UPDATE Seats SET is_available = FALSE WHERE seat_id = v_seat_id;
+
+        SET p_status_message = '訂票成功！';
+        COMMIT;
+    ELSE
+        SET p_booking_id = -1;
+        SET p_status_message = '訂票失敗：座位已被預訂或不存在。';
+        ROLLBACK;
+    END IF;
+END$$
+DELIMITER ;
